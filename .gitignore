@@ -1,0 +1,18 @@
+# Secrets and generated data
+.env
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

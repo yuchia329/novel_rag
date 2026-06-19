@@ -1,0 +1,6 @@
+[client]
+# Hide Streamlit's developer options. This also disables the developer keyboard
+# shortcuts — notably "C" (clear caches) and "R" (rerun) — so selecting an answer
+# and pressing Cmd/Ctrl+C just copies the text instead of popping the clear-cache
+# dialog. Set to "developer" if you want those tools back.
+toolbarMode = "viewer"
