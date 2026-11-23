@@ -1,7 +1,7 @@
 [project]
 name = "novel-rag"
 version = "0.1.0"
-description = "RAG system for Chinese web novels: scrape a TOC link, index it, ask high-quality grounded questions."
+description = "Hybrid vector + knowledge-graph RAG over long Chinese novels, with a reproducible evaluation harness."
 requires-python = ">=3.12"
 dependencies = [
     "httpx[http2]>=0.27",
@@ -13,11 +13,12 @@ dependencies = [
     "typer>=0.12",
     "rich>=13",
     "tenacity>=8.3",
-    "tiktoken>=0.7",
     "openai>=1.40",
     "opencc-python-reimplemented>=0.1.7",
     "jieba>=0.42",
     "sentence-transformers>=3.0",
+    "transformers>=4.40",
+    "networkx>=3.2",
     "torch>=2.3",
     "streamlit>=1.37",
 ]

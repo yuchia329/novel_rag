@@ -2,6 +2,24 @@
 .env
 data/
 
+# Eval artifacts for the copyrighted web novel contain derived text (questions,
+# answers) — keep them local. Aggregate metrics (*.json summaries, *.md) are fine.
+eval/datasets/0113604596.jsonl
+eval/labels/0113604596.jsonl
+
+# Per-question result dumps are large (0.5-3 MB each) and regenerable with
+# `novel-rag eval retrieval|e2e`; only the summaries (*.json, *.md) are committed.
+eval/results/**/*_per_question.jsonl
+
+# Large local artifacts: models, indexes, caches, notebooks output
+*.lance/
+*.sqlite
+*.sqlite-*
+*.safetensors
+*.bin
+*.onnx
+*.parquet
+
 # Python
 __pycache__/
 *.py[cod]

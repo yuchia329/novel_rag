@@ -1,0 +1,12 @@
+{
+ "items": 188,
+ "single_hop": 136,
+ "multi_hop": 32,
+ "unanswerable": 20,
+ "llm_usage": {
+  "calls": 148,
+  "cache_hits": 148,
+  "prompt_tokens": 0,
+  "completion_tokens": 0
+ }
+}

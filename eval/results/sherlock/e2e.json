@@ -1,0 +1,83 @@
+{
+ "novel_id": "sherlock",
+ "created": "2026-11-23 13:40",
+ "configs": {
+  "closed_book": {
+   "n_answerable": 168,
+   "accuracy": 0.15476190476190477,
+   "accuracy_ci95": [
+    0.10119047619047619,
+    0.20833333333333334
+   ],
+   "mean_score": 0.26785714285714285,
+   "accuracy_by_qtype": {
+    "single_hop": 0.16058394160583941,
+    "multi_hop": 0.12903225806451613
+   },
+   "false_abstention": 0.05952380952380952,
+   "unanswerable_abstention": 0.45,
+   "faithfulness": NaN,
+   "citation_precision": NaN,
+   "citation_recall": 0.0,
+   "retrieval_ms_p50": NaN,
+   "retrieval_ms_p95": NaN
+  },
+  "hybrid+rerank": {
+   "n_answerable": 168,
+   "accuracy": 0.8511904761904762,
+   "accuracy_ci95": [
+    0.7976190476190477,
+    0.8988095238095238
+   ],
+   "mean_score": 0.8958333333333334,
+   "accuracy_by_qtype": {
+    "single_hop": 0.9124087591240876,
+    "multi_hop": 0.5806451612903226
+   },
+   "false_abstention": 0.05357142857142857,
+   "unanswerable_abstention": 0.8,
+   "faithfulness": 0.9404761904761905,
+   "citation_precision": 0.9723926380368099,
+   "citation_recall": 0.9375,
+   "retrieval_ms_p50": 2461.9088744984765,
+   "retrieval_ms_p95": 2599.968860096851
+  },
+  "hybrid+rerank+graph": {
+   "n_answerable": 168,
+   "accuracy": 0.8630952380952381,
+   "accuracy_ci95": [
+    0.8095238095238095,
+    0.9107142857142857
+   ],
+   "mean_score": 0.8988095238095238,
+   "accuracy_by_qtype": {
+    "single_hop": 0.8978102189781022,
+    "multi_hop": 0.7096774193548387
+   },
+   "false_abstention": 0.02976190476190476,
+   "unanswerable_abstention": 0.85,
+   "faithfulness": 0.9285714285714286,
+   "citation_precision": 0.9648594377510039,
+   "citation_recall": 0.9494047619047619,
+   "retrieval_ms_p50": 2491.3205210032174,
+   "retrieval_ms_p95": 2625.984149551732
+  }
+ },
+ "generator": "MiniMax-M3.1-Flash",
+ "judge": "MiniMax-M3",
+ "profile": "sent-512",
+ "llm_usage": {
+  "generator": {
+   "calls": 564,
+   "cache_hits": 396,
+   "prompt_tokens": 691004,
+   "completion_tokens": 23384
+  },
+  "judge": {
+   "calls": 564,
+   "cache_hits": 354,
+   "prompt_tokens": 844999,
+   "completion_tokens": 114380
+  }
+ }
+}

@@ -1,11 +1,12 @@
-"""End-to-end ingestion: TOC -> scrape (cached) -> clean -> chunk -> embed ->
-LanceDB -> FTS index -> (optional) per-chapter summaries.
+"""End-to-end ingestion: source -> clean chapters -> chunk -> embed -> LanceDB ->
+FTS index -> (optional) knowledge graph + per-chapter summaries.
 
-Three independently resumable phases keyed off disk artifacts:
-  * ``_toc.json``         — the chapter manifest
-  * raw ``NNNN.html``     — skip the network if a page is already cached
-  * ``chapters.jsonl``    — cleaned chapters; skip re-parsing
-  * ``indexed.json``      — chapter indices already embedded into LanceDB
+Two sources: a web TOC URL (scraped politely, cached) or a local text file
+(public-domain corpus). Independently resumable phases keyed off disk artifacts:
+  * ``_toc.json``              — the chapter manifest
+  * raw ``NNNN.html``          — skip the network if a page is already cached
+  * ``chapters.jsonl``         — cleaned chapters; skip re-parsing
+  * ``indexed__<profile>.json`` — chapters already embedded for that chunk profile
 """
 
 from __future__ import annotations
@@ -16,21 +17,24 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import track
 
-from novel_rag.chunk.chunker import chunk_chapter
+from novel_rag.chunk.chunker import chunk_chapter, get_profile
 from novel_rag.config import Settings
-from novel_rag.embed.factory import build_embedder
-from novel_rag.generate.prompts import build_chapter_summary_messages
 from novel_rag.models import Chapter, ChapterRef
 from novel_rag.parse.clean import build_chapter, detect_total_pages
 from novel_rag.scrape.chapter import _MAX_PAGES, page_url
 from novel_rag.scrape.http_client import PoliteClient
 from novel_rag.scrape.toc import extract_novel_id, parse_toc
-from novel_rag.store.lancedb_store import LanceDBStore
+from novel_rag.store.lancedb_store import (
+    LanceDBStore,
+    all_table_names,
+    meta_path,
+    parents_table_name,
+    table_name,
+)
 
 console = Console()
 
 _INDEX_SAVE_EVERY = 10
-_SUMMARY_INPUT_CHARS = 4000
 
 
 # ── disk helpers ─────────────────────────────────────────────────────────────
@@ -94,48 +98,75 @@ def load_cleaned_chapters(settings: Settings, novel_id: str) -> list[Chapter]:
     return [chapters[i] for i in sorted(chapters)]
 
 
-def _drop_index(settings: Settings, novel_id: str) -> None:
+def _indexed_path(settings: Settings, novel_id: str, profile: str) -> Path:
+    return settings.novel_raw_dir(novel_id) / f"indexed__{profile}.json"
+
+
+def _drop_index(settings: Settings, novel_id: str, profile: str) -> None:
     import lancedb
 
     db = lancedb.connect(str(settings.lancedb_dir))
-    name = f"chunks_{novel_id}"
-    if name in db.table_names():
-        db.drop_table(name)
-    raw_dir = settings.novel_raw_dir(novel_id)
-    for p in (settings.lancedb_dir / f"{novel_id}.meta.json", raw_dir / "indexed.json"):
+    for name in (table_name(novel_id, profile), parents_table_name(novel_id, profile)):
+        if name in all_table_names(db):
+            db.drop_table(name)
+    for p in (meta_path(settings, novel_id, profile), _indexed_path(settings, novel_id, profile)):
         if p.exists():
             p.unlink()
 
 
 def index_chapters(
-    settings: Settings, novel_id: str, chapters: list[Chapter], fresh: bool = False
+    settings: Settings,
+    novel_id: str,
+    chapters: list[Chapter],
+    fresh: bool = False,
+    profile: str | None = None,
+    kg_dict: bool = True,
 ) -> tuple[LanceDBStore, int]:
-    """Chunk -> embed -> upsert chapters. ``fresh=True`` rebuilds from scratch
-    (used by reindex, e.g. after switching embedding provider)."""
-    embedder = build_embedder(settings)
-    indexed_path = settings.novel_raw_dir(novel_id) / "indexed.json"
+    """Chunk -> embed -> upsert chapters for one chunk profile.
+
+    ``fresh=True`` rebuilds from scratch (after switching embedder or changing
+    the chunker). Each profile gets its own table, so profiles coexist.
+    """
+    prof = get_profile(profile or settings.chunk_profile)
+    from novel_rag.pipeline.query import cached_embedder
+
+    embedder = cached_embedder(settings)
+    # KG names as a jieba user dictionary (must match at query time; see text_norm)
+    n_words = 0
+    if kg_dict:
+        from novel_rag.kg.retrieve import GraphRetriever
+        from novel_rag.text_norm import add_user_words
+
+        graph = GraphRetriever.load(settings.kg_dir(novel_id))
+        n_words = add_user_words(graph.all_surface_forms()) if graph else 0
+    indexed_path = _indexed_path(settings, novel_id, prof.name)
     if fresh:
-        _drop_index(settings, novel_id)
+        _drop_index(settings, novel_id, prof.name)
         indexed: set[int] = set()
     else:
         indexed = set(_load_json(indexed_path, []))
 
-    store = LanceDBStore(settings, novel_id, embedder.name, embedder.dim)
+    store = LanceDBStore(settings, novel_id, embedder.name, embedder.dim, prof.name)
     pending = [c for c in chapters if c.index not in indexed and c.text.strip()]
     n_chunks = 0
-    for i, chapter in enumerate(track(pending, description="Embedding + indexing"), 1):
-        chunks = chunk_chapter(
-            chapter, novel_id, settings.chunk_tokens, settings.chunk_overlap
-        )
+    desc = f"Embedding + indexing \\[{prof.name}]"
+    for i, chapter in enumerate(track(pending, description=desc), 1):
+        chunks, parents = chunk_chapter(chapter, novel_id, prof)
         if chunks:
             store.upsert(chunks, embedder.embed_documents([c.text for c in chunks]))
+            store.upsert_parents(parents)
             n_chunks += len(chunks)
         indexed.add(chapter.index)
         if i % _INDEX_SAVE_EVERY == 0:
             _save_json(indexed_path, sorted(indexed))
     _save_json(indexed_path, sorted(indexed))
-    store.build_fts_index()
-    store.write_meta()
+    if not fresh and not pending and store.count() > 0:
+        return store, 0  # nothing new; keep existing indexes + meta
+    maint = store.finalize()
+    console.print(f"compacted {maint['fragments_before']} -> {maint['fragments_after']} fragments")
+    store.write_meta({"strategy": prof.strategy, "max_tokens": prof.max_tokens,
+                      "overlap": prof.overlap, "parent_tokens": prof.parent_tokens,
+                      "bm25_user_words": n_words})
     return store, n_chunks
 
 
@@ -144,7 +175,7 @@ def ingest(
     settings: Settings,
     toc_url: str,
     limit: int | None = None,
-    build_summaries: bool = True,
+    build_kg: bool = False,
 ) -> dict:
     settings.ensure_dirs()
     novel_id = extract_novel_id(toc_url)
@@ -184,18 +215,65 @@ def ingest(
     store, n_chunks = index_chapters(settings, novel_id, ordered)
     console.print(f"Indexed {store.count()} chunks total.")
 
-    # 4) Per-chapter summaries (optional; needs MiniMax) ----------------------
-    n_summaries = 0
-    if build_summaries:
-        n_summaries = _build_summaries(settings, ordered, raw_dir)
+    # 4) Knowledge graph + per-chapter summaries (optional; needs MiniMax) ---
+    kg_stats = _maybe_build_kg(settings, novel_id, ordered) if build_kg else {}
 
     return {
         "novel_id": novel_id,
+        "profile": store.profile,
         "chapters": len(ordered),
         "chunks_added_this_run": n_chunks,
         "chunks_total": store.count(),
-        "summaries": n_summaries,
+        **kg_stats,
     }
+
+
+def ingest_text_file(
+    settings: Settings,
+    path: Path,
+    novel_id: str,
+    heading_regex: str | None = None,
+    build_kg: bool = False,
+    limit: int | None = None,
+) -> dict:
+    """Ingest a local plain-text novel (e.g. a public-domain Gutenberg file)."""
+    from novel_rag.parse.local_text import DEFAULT_HEADING, split_chapters
+
+    settings.ensure_dirs()
+    raw_dir = settings.novel_raw_dir(novel_id)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    chapters = split_chapters(
+        Path(path).read_text(encoding="utf-8"), heading_regex or DEFAULT_HEADING,
+        source=f"file://{Path(path).name}",
+    )
+    if not chapters:
+        raise RuntimeError(f"No chapter headings matched in {path}")
+    chapters = chapters[:limit] if limit else chapters
+    chapters_path = raw_dir / "chapters.jsonl"
+    chapters_path.write_text(
+        "".join(c.model_dump_json() + "\n" for c in chapters), encoding="utf-8"
+    )
+    _save_json(raw_dir / "_toc.json",
+               [{"index": c.index, "title": c.title, "url": c.url} for c in chapters])
+    console.print(f"[bold]{novel_id}[/]: {len(chapters)} chapters parsed from {path}.")
+    store, n_chunks = index_chapters(settings, novel_id, chapters)
+    kg_stats = _maybe_build_kg(settings, novel_id, chapters) if build_kg else {}
+    return {
+        "novel_id": novel_id,
+        "profile": store.profile,
+        "chapters": len(chapters),
+        "chunks_total": store.count(),
+        **kg_stats,
+    }
+
+
+def _maybe_build_kg(settings: Settings, novel_id: str, chapters: list[Chapter]) -> dict:
+    if not settings.minimax_api_key:
+        console.print("[yellow]No MINIMAX_API_KEY — skipping knowledge graph.[/]")
+        return {}
+    from novel_rag.kg.build import build_graph
+
+    return build_graph(settings, novel_id, chapters)
 
 
 def _read_or_fetch_toc(settings: Settings, toc_url: str, toc_path: Path) -> list[ChapterRef]:
@@ -207,36 +285,3 @@ def _read_or_fetch_toc(settings: Settings, toc_url: str, toc_path: Path) -> list
         raise RuntimeError(f"No chapters found on TOC page: {toc_url}")
     _save_json(toc_path, [r.model_dump() for r in refs])
     return refs
-
-
-def _build_summaries(settings: Settings, chapters: list[Chapter], raw_dir: Path) -> int:
-    if not settings.minimax_api_key:
-        console.print("[yellow]No MINIMAX_API_KEY — skipping chapter summaries.[/]")
-        return 0
-    from novel_rag.generate.llm import MiniMaxLLM
-
-    path = raw_dir / "chapter_summaries.json"
-    existing = _load_json(path, [])
-    done = {it["index"] for it in existing}
-    pending = [c for c in chapters if c.index not in done and c.text.strip()]
-    if not pending:
-        return len(existing)
-
-    llm = MiniMaxLLM(settings)
-    for i, chapter in enumerate(track(pending, description="Summarizing chapters"), 1):
-        try:
-            summary = llm.chat(
-                build_chapter_summary_messages(
-                    chapter.title, chapter.text[:_SUMMARY_INPUT_CHARS]
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[red]summary failed[/] ch{chapter.index}: {exc}")
-            continue
-        existing.append(
-            {"index": chapter.index, "title": chapter.title, "summary": summary}
-        )
-        if i % _INDEX_SAVE_EVERY == 0:
-            _save_json(path, sorted(existing, key=lambda it: it["index"]))
-    _save_json(path, sorted(existing, key=lambda it: it["index"]))
-    return len(existing)
